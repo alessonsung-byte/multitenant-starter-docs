@@ -1,0 +1,9 @@
+依 multitenant-starter-docs/goal/自動開發指示.md 完成第 1 節的範圍（每輪開始先讀 goal/PROGRESS.md）。
+
+完成的唯一判定：multitenant-starter-backend、multitenant-starter-frontend 都在 main 分支且 git status 乾淨的狀態下，在 multitenant-starter-docs 執行 `bash goal/verify-local.sh`，結束碼為 0、輸出第一行的 SHA256 為 <開始 goal 前由人類執行 shasum -a 256 goal/verify-local.sh 填入>、最後一行為 `ALL CHECKS PASSED`，並把這次執行的完整輸出貼在回覆中。
+
+過程中必須遵守：不得修改 verify-local.sh 與 自動開發指示.md；不得 git push 或修改 remote；不得為了通過檢查而跳過、刪除或弱化測試，或關閉 RLS、繞過權限檢查；完成時要 commit 並合併回 main，且更新 PROGRESS.md 與指示第 4 節列出的文件。
+
+每輪回覆的開頭寫出：本輪完成了什麼、最近一次 verify-local.sh 的 PASS／FAIL 摘要。
+
+如果回覆第一行是 `BLOCKED: 見 goal/BLOCKED.md`（指示第 3-2 節的情況），表示需要人類決定，視為目標無法完成。或在 300 輪後停止。
