@@ -1,17 +1,31 @@
 #!/usr/bin/env bash
 # =====================================================================
-# 本地驗收腳本（Claude Code /goal 使用，也可以手動執行）
+# 本地驗收腳本（各 AI 工具的 /goal 使用，也可以手動執行）
 # 用法：bash goal/verify-local.sh
 # 前提：三個 repo 放在同一層資料夾（multitenant-starter-docs／-backend／-frontend），
-#       或以環境變數 BACKEND、FRONTEND 指定位置
+#       或以環境變數 BACKEND、FRONTEND 指定位置（使用 git worktree 時一定要指定）
+# 可選的環境變數（多個 agent 同時驗收時使用，見 tasks/README.md、03-決策紀錄.md D-25）：
+#   AGENT_SLOT     槽位編號 0～9，預設 0。不同槽位使用不同的 port、E2E 資料庫與 Redis DB，可以同時執行
+#   VERIFY_BRANCH  後端、前端 repo 必須所在的分支，預設 main（平行模式填任務分支或整合分支）
 # 注意：
 #   - /goal 執行期間不得修改本檔（第一行輸出的 SHA256 用來確認沒被改過）
-#   - 會重建本機 PostgreSQL 中的 starter_e2e 資料庫並清空本機 Redis；不會動到 starter 資料庫（本機開發用）
-#   - 執行前請關閉本機開發中的前端（4200 port）與後端（18080 port）
+#   - 會重建本機 PostgreSQL 中這個槽位的 E2E 資料庫（槽位 0 為 starter_e2e，槽位 N 為 starter_e2e_N），
+#     並清空 Redis 中這個槽位的 DB（編號同槽位）；不會動到 starter 資料庫（本機開發用）與其他槽位
+#   - 槽位 N 使用前端 port 4200+N×10、後端 port 18080+N；執行前請關閉佔用這兩個 port 的程式
 # =====================================================================
 set -uo pipefail
 
 DOCS="$(cd "$(dirname "$0")/.." && pwd)"
+AGENT_SLOT="${AGENT_SLOT:-0}"
+VERIFY_BRANCH="${VERIFY_BRANCH:-main}"
+case "$AGENT_SLOT" in
+  [0-9]) ;;
+  *) echo "AGENT_SLOT 必須是 0～9 的整數（目前：${AGENT_SLOT}）"; exit 2 ;;
+esac
+FE_PORT=$((4200 + AGENT_SLOT * 10))
+BE_PORT=$((18080 + AGENT_SLOT))
+E2E_DB="starter_e2e"; [ "$AGENT_SLOT" != "0" ] && E2E_DB="starter_e2e_${AGENT_SLOT}"
+REDIS_DB="$AGENT_SLOT"
 BACKEND="${BACKEND:-$DOCS/../multitenant-starter-backend}"
 FRONTEND="${FRONTEND:-$DOCS/../multitenant-starter-frontend}"
 WORK="$(mktemp -d)"
@@ -22,6 +36,7 @@ FRONTEND_LISTEN_PID=""
 
 echo "verify-local.sh SHA256: $(shasum -a 256 "$0" | cut -d' ' -f1)"
 echo "時間：$(date '+%Y-%m-%d %H:%M:%S')"
+echo "槽位：${AGENT_SLOT}（前端 ${FE_PORT}、後端 ${BE_PORT}、資料庫 ${E2E_DB}、Redis DB ${REDIS_DB}）；要求分支：$VERIFY_BRANCH"
 
 step() { echo; echo "===== $1 ====="; }
 pass() { echo "  [PASS] $1"; }
@@ -30,7 +45,7 @@ fail() { echo "  [FAIL] $1"; FAILED=1; }
 cleanup() {
   [ -n "$BACKEND_PID" ] && kill "$BACKEND_PID" 2>/dev/null
   [ -n "$FRONTEND_PID" ] && kill "$FRONTEND_PID" 2>/dev/null
-  # pnpm start 底下的 next-server 是另一個程序，只停外層不會釋放 4200 port，要另外停掉
+  # next start 底下的 next-server 是另一個程序，只停外層不會釋放前端 port，要另外停掉
   [ -n "$FRONTEND_LISTEN_PID" ] && kill $FRONTEND_LISTEN_PID 2>/dev/null
   return 0
 }
@@ -49,7 +64,7 @@ java -version 2>&1 | grep -q 'version "21' && pass "Java 21" || fail "Java 版�
 if true; then
   for repo in "$BACKEND" "$FRONTEND"; do
     name="$(basename "$repo")"
-    [ "$(git -C "$repo" rev-parse --abbrev-ref HEAD)" = "main" ] && pass "$name 在 main" || fail "$name 不在 main"
+    [ "$(git -C "$repo" rev-parse --abbrev-ref HEAD)" = "$VERIFY_BRANCH" ] && pass "$name 在 $VERIFY_BRANCH" || fail "$name 不在 $VERIFY_BRANCH"
     [ -z "$(git -C "$repo" status --porcelain)" ] && pass "$name 工作目錄乾淨" || fail "$name 有未 commit 的變更"
     git -C "$repo" ls-files | grep -E '(^|/)\.env($|\.)' | grep -v '\.example$' >/dev/null \
       && fail "$name 的 git 中有 .env 檔" || pass "$name 沒有提交 .env 檔"
@@ -64,13 +79,13 @@ else
   fail "容器啟動失敗"; tail -20 "$WORK/compose.log"
 fi
 PSQL="docker exec starter-postgres-local psql -U root -d postgres -v ON_ERROR_STOP=1 -tAc"
-for db in starter_e2e; do
+for db in $E2E_DB; do
   $PSQL "DROP DATABASE IF EXISTS $db WITH (FORCE);" >/dev/null && $PSQL "CREATE DATABASE $db;" >/dev/null \
     && pass "重建資料庫 $db" || fail "無法重建資料庫 $db"
 done
 [ "$($PSQL "SELECT rolsuper FROM pg_roles WHERE rolname='starter_app'")" = "f" ] \
   && pass "執行用帳號 starter_app 存在且不是 superuser" || fail "starter_app 不存在或是 superuser"
-docker exec starter-redis-local redis-cli FLUSHALL >/dev/null && pass "清空 Redis" || fail "無法清空 Redis"
+docker exec starter-redis-local redis-cli -n "$REDIS_DB" FLUSHDB >/dev/null && pass "清空 Redis DB $REDIS_DB" || fail "無法清空 Redis DB $REDIS_DB"
 
 # ---------------------------------------------------------------------
 step "3. 後端建置與測試（./mvnw clean verify）"
@@ -121,38 +136,39 @@ fi
 
 # ---------------------------------------------------------------------
 step "5. 啟動前後端並執行 E2E（Playwright）"
-lsof -nP -iTCP:18080 -sTCP:LISTEN >/dev/null 2>&1 && fail "18080 port 已被使用"
+lsof -nP -iTCP:$BE_PORT -sTCP:LISTEN >/dev/null 2>&1 && fail "$BE_PORT port 已被使用"
 JAR="$BACKEND/codebase/api-server/target/api-server.jar"
 if [ "$FAILED" = "0" ] && [ -f "$JAR" ]; then
   APP_JWT_KEY="$(openssl rand -base64 32)" \
   APP_JASYPT_PASSWORD=verify-local \
-  APP_DB_NAME=starter_e2e \
+  APP_DB_NAME="$E2E_DB" \
+  APP_REDIS_DATABASE="$REDIS_DB" \
   APP_DB_USERNAME=starter_app APP_DB_PASSWORD=starter_app_local \
   APP_FLYWAY_USERNAME=root APP_FLYWAY_PASSWORD=starter_owner_local \
-  API_SERVER_PORT=18080 \
+  API_SERVER_PORT=$BE_PORT \
   API_SERVER_LOG_FILE_NAME="$WORK/api-server.log" \
   java -jar "$JAR" >"$WORK/backend.out" 2>&1 &
   BACKEND_PID=$!
-  for _ in $(seq 1 120); do curl -sf http://localhost:18080/ping >/dev/null && break; sleep 1; done
-  curl -sf http://localhost:18080/ping >/dev/null && pass "後端啟動（使用 starter_app 帳號連線）" \
+  for _ in $(seq 1 120); do curl -sf http://localhost:$BE_PORT/ping >/dev/null && break; sleep 1; done
+  curl -sf http://localhost:$BE_PORT/ping >/dev/null && pass "後端啟動（使用 starter_app 帳號連線）" \
     || { fail "後端 120 秒內沒有啟動"; tail -40 "$WORK/backend.out"; }
 
-  PORT_4200_WAS_FREE=1
-  if lsof -tiTCP:4200 -sTCP:LISTEN >/dev/null 2>&1; then
-    PORT_4200_WAS_FREE=0
-    fail "4200 port 已被佔用（請先關掉開發中的前端或上次留下的 next-server）"
+  FE_PORT_WAS_FREE=1
+  if lsof -tiTCP:$FE_PORT -sTCP:LISTEN >/dev/null 2>&1; then
+    FE_PORT_WAS_FREE=0
+    fail "$FE_PORT port 已被佔用（請先關掉開發中的前端或上次留下的 next-server）"
   fi
   (cd "$FRONTEND/apps/starter" && \
     NEXT_PUBLIC_BASE_PATH=/starter \
-    API_PREFIX=http://localhost:18080 \
+    API_PREFIX=http://localhost:$BE_PORT \
     SECRET_KEY="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')" \
-    SESSION_KEY=STARTER_E2E COOKIE_SECURE=false NODE_ENV=production \
-    pnpm start) >"$WORK/frontend-server.log" 2>&1 &
+    SESSION_KEY="STARTER_E2E_${AGENT_SLOT}" COOKIE_SECURE=false NODE_ENV=production \
+    pnpm exec next start --port "$FE_PORT") >"$WORK/frontend-server.log" 2>&1 &
   FRONTEND_PID=$!
-  for _ in $(seq 1 60); do curl -sf http://localhost:4200/starter/login >/dev/null && break; sleep 1; done
+  for _ in $(seq 1 60); do curl -sf http://localhost:$FE_PORT/starter/login >/dev/null && break; sleep 1; done
   # 只記錄這次自己啟動的 next-server，不會停掉別的程式
-  [ "$PORT_4200_WAS_FREE" = "1" ] && FRONTEND_LISTEN_PID="$(lsof -tiTCP:4200 -sTCP:LISTEN 2>/dev/null)"
-  curl -sf http://localhost:4200/starter/login >/dev/null && pass "前端啟動" \
+  [ "$FE_PORT_WAS_FREE" = "1" ] && FRONTEND_LISTEN_PID="$(lsof -tiTCP:$FE_PORT -sTCP:LISTEN 2>/dev/null)"
+  curl -sf http://localhost:$FE_PORT/starter/login >/dev/null && pass "前端啟動" \
     || { fail "前端 60 秒內沒有啟動"; tail -20 "$WORK/frontend-server.log"; }
 else
   fail "前面的步驟失敗或找不到 ${JAR}，略過 E2E"
@@ -160,7 +176,7 @@ fi
 
 if [ "$FAILED" = "0" ]; then
   rm -f "$FRONTEND/apps/starter/e2e-results.json"
-  (cd "$FRONTEND" && E2E_BASE_URL=http://localhost:4200/starter pnpm --filter starter e2e) >"$WORK/e2e.log" 2>&1
+  (cd "$FRONTEND" && E2E_BASE_URL=http://localhost:$FE_PORT/starter pnpm --filter starter e2e) >"$WORK/e2e.log" 2>&1
   cat >"$WORK/check-e2e.js" <<'JS'
 const fs = require("fs");
 const [file, ...required] = process.argv.slice(2);
@@ -185,8 +201,8 @@ JS
 fi
 
 # ---------------------------------------------------------------------
-step "6. 資料庫隔離設定檢查（starter_e2e）"
-DBQ="docker exec starter-postgres-local psql -U root -d starter_e2e -v ON_ERROR_STOP=1 -tAc"
+step "6. 資料庫隔離設定檢查（${E2E_DB}）"
+DBQ="docker exec starter-postgres-local psql -U root -d $E2E_DB -v ON_ERROR_STOP=1 -tAc"
 NO_RLS="$($DBQ "SELECT c.relname FROM pg_class c
   WHERE c.relkind='r' AND c.relnamespace='public'::regnamespace AND c.relname <> 'mt_user'
     AND EXISTS (SELECT 1 FROM information_schema.columns col

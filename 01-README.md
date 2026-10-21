@@ -29,11 +29,11 @@
 - 預設帳號：`admin`／初始密碼 `admin`（總管理員，第一次登入時系統會要求修改密碼）
 - 本機示範資料（後端 Spring profile `local`）：`admin`／`Starter-Admin-2026`、`tenant_a_user`／`Starter-TenantA-2026`、`tenant_b_user`／`Starter-TenantB-2026`，兩個示範租戶各有幾筆客戶與訂單
 - 資料庫帳號：建表帳號（Flyway，資料表擁有者）與後端執行用的 `starter_app` 分開，原因見 `03-決策紀錄.md` D-04
-- 自動化測試：後端 `./mvnw clean verify`（需要 Docker）；前端 E2E `pnpm --filter starter e2e`；整套本地驗收 `bash goal/verify-local.sh`
+- 自動化測試：後端 `./mvnw clean verify`（需要 Docker）；前端 E2E `pnpm --filter starter e2e`；整套本地驗收 `bash goal/verify-local.sh`（多個 agent 同時驗收時加上 `AGENT_SLOT=1`～`9` 錯開 port 與資料庫，見 `tasks/README.md` 第 4 節）
 
 ## 文件怎麼讀
 
-依照 `CLAUDE.md` 第 1 節的順序：先讀 `00-文件規範.md`，再讀 `03-決策紀錄.md`，再讀 `02-需求書.md`；要知道系統怎麼組成、每個功能怎麼實作，讀 `13-系統架構設計.md`；要知道接下來做什麼，讀 `11-開發計畫.md`；要知道最近改了什麼，讀 `09-變更日誌.md`。
+依照 `AGENTS.md` 第 1 節的順序：先讀 `00-文件規範.md`，再讀 `03-決策紀錄.md`，再讀 `02-需求書.md`；要知道系統怎麼組成、每個功能怎麼實作，讀 `13-系統架構設計.md`；要知道接下來做什麼，讀 `11-開發計畫.md`；要知道最近改了什麼，讀 `09-變更日誌.md`。
 
 ## 這個 repo 沒有的文件
 
